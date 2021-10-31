@@ -1,6 +1,7 @@
 import re
 
 import mmh3
+import spacy as spacy
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 
 from sparkcc import CCSparkJob
@@ -10,13 +11,22 @@ NUM_CHARS = 1000
 NUM_PAGES = 1024
 
 
-class Indexer(CCSparkJob):
-    word_pattern = re.compile(r'\w+', re.UNICODE)
+nlp = spacy.load("en_core_web_sm")
 
+
+# def tokenizer(sentence):
+#     parsed = nlp.tokenizer(sentence)
+#     return [str(token).lower() for token in parsed
+#             if not token.is_punct
+#             and not token.is_space]
+
+
+class Indexer(CCSparkJob):
     output_schema = StructType([
-        StructField("term_hash", LongType(), True),
-        StructField("uri", StringType(), True),
-        StructField("extract", StringType(), True),
+        StructField("term_hash", LongType(), False),
+        StructField("term", StringType(), False),
+        StructField("uri", StringType(), False),
+        StructField("extract", StringType(), False),
     ])
 
     def process_record(self, record):
@@ -33,13 +43,16 @@ class Indexer(CCSparkJob):
         uri = record.rec_headers.get_header('WARC-Target-URI')
         extract = record.content_stream().read().decode('utf-8')[:NUM_CHARS]
 
-        words = map(lambda w: w.lower(),
-                    Indexer.word_pattern.findall(extract))
-        for word in words:
-            key_hash = mmh3.hash(word, signed=False)
-            key = key_hash % NUM_PAGES
+        tokens = nlp.tokenizer(extract)
 
-            yield key, uri, extract
+        for token in tokens[:-1]:
+            if token.is_punct or token.is_space or token.is_stop:
+                continue
+
+            term = str(token).lower()
+            key_hash = mmh3.hash(term, signed=False)
+            key = key_hash % NUM_PAGES
+            yield key, term, uri, extract
 
     def run_job(self, sc, sqlc):
         input_data = sc.textFile(self.args.input,
