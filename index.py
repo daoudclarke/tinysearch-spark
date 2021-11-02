@@ -3,6 +3,7 @@ import re
 import mmh3
 import spacy as spacy
 from pyspark.sql.types import StructType, StructField, StringType, LongType
+from spacy.pipeline import Sentencizer
 from spacy.tokens import Doc, Token, Span
 
 from sparkcc import CCSparkJob
@@ -15,6 +16,7 @@ NUM_PAGES = 1024
 
 
 nlp = spacy.load("en_core_web_sm", disable=['lemmatizer', 'ner'])
+sentencizer = Sentencizer(Sentencizer.default_punct_chars + ['\n'])
 
 
 # def tokenizer(sentence):
@@ -63,7 +65,8 @@ class Indexer(CCSparkJob):
         uri = record.rec_headers.get_header('WARC-Target-URI')
         content = record.content_stream().read().decode('utf-8')[:NUM_CHARS_TO_ANALYSE]
 
-        doc = nlp(content)
+        doc = nlp.tokenizer(content)
+        doc = sentencizer(doc)
         sentences = list(doc.sents)
         title_span = sentences[0]
 
