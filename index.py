@@ -60,18 +60,22 @@ def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
     is represented as instance of class ˙˙justext.paragraph.Paragraph˙˙.
     """
     dom = html_to_dom(html_text, default_encoding, encoding, enc_errors)
-    dom = preprocessor(dom)
-
-    paragraphs = ParagraphMaker.make_paragraphs(dom)
-
-    classify_paragraphs(paragraphs, stoplist, length_low, length_high,
-                        stopwords_low, stopwords_high, max_link_density, no_headings)
-    revise_paragraph_classification(paragraphs, max_heading_distance)
+    print("Parsed HTML")
 
     try:
         title = dom.find(".//title").text
     except AttributeError:
         title = None
+
+    preprocessed_dom = preprocessor(dom)
+
+    paragraphs = ParagraphMaker.make_paragraphs(preprocessed_dom)
+    print("Got paragraphs")
+
+    classify_paragraphs(paragraphs, stoplist, length_low, length_high,
+                        stopwords_low, stopwords_high, max_link_density, no_headings)
+    revise_paragraph_classification(paragraphs, max_heading_distance)
+
     return paragraphs, title
 
 
@@ -101,7 +105,7 @@ class Indexer(CCSparkJob):
 
         uri = record.rec_headers.get_header('WARC-Target-URI')
         content = record.content_stream().read().strip()
-        print("Content", content[:100])
+        print("Content", uri, content[:100])
 
         if not content:
             return
