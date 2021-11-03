@@ -2,6 +2,13 @@ import re
 
 import mmh3
 import spacy as spacy
+from justext import get_stoplist
+from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_DEFAULT, \
+    STOPWORDS_HIGH_DEFAULT, MAX_LINK_DENSITY_DEFAULT, NO_HEADINGS_DEFAULT, \
+    MAX_HEADING_DISTANCE_DEFAULT, DEFAULT_ENCODING, DEFAULT_ENC_ERRORS, preprocessor, html_to_dom, \
+    ParagraphMaker, classify_paragraphs, revise_paragraph_classification
+from langdetect import detect
+from lxml.etree import ParserError
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 from spacy.pipeline import Sentencizer
 from spacy.tokens import Doc, Token, Span
@@ -42,6 +49,33 @@ def extract_terms(span: Span, terms: set[str], max_chars: int) -> str:
     return extract
 
 
+def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
+            length_high=LENGTH_HIGH_DEFAULT, stopwords_low=STOPWORDS_LOW_DEFAULT,
+            stopwords_high=STOPWORDS_HIGH_DEFAULT, max_link_density=MAX_LINK_DENSITY_DEFAULT,
+            max_heading_distance=MAX_HEADING_DISTANCE_DEFAULT, no_headings=NO_HEADINGS_DEFAULT,
+            encoding=None, default_encoding=DEFAULT_ENCODING,
+            enc_errors=DEFAULT_ENC_ERRORS, preprocessor=preprocessor):
+    """
+    Converts an HTML page into a list of classified paragraphs. Each paragraph
+    is represented as instance of class ˙˙justext.paragraph.Paragraph˙˙.
+    """
+    dom = html_to_dom(html_text, default_encoding, encoding, enc_errors)
+    dom = preprocessor(dom)
+
+    paragraphs = ParagraphMaker.make_paragraphs(dom)
+
+    classify_paragraphs(paragraphs, stoplist, length_low, length_high,
+                        stopwords_low, stopwords_high, max_link_density, no_headings)
+    revise_paragraph_classification(paragraphs, max_heading_distance)
+
+    try:
+        title = dom.find(".//title").text
+    except AttributeError:
+        title = None
+    return paragraphs, title
+
+
+
 class Indexer(CCSparkJob):
     output_schema = StructType([
         StructField("term_hash", LongType(), False),
@@ -52,32 +86,61 @@ class Indexer(CCSparkJob):
     ])
 
     def process_record(self, record):
-        if not self.is_wet_text_record(record):
-            return
-
-        # print("Process", record.format, record.rec_type, record.rec_headers, record.raw_stream,
+        # print("Record", record.format, record.rec_type, record.rec_headers, record.raw_stream,
         #       record.http_headers, record.content_type, record.length)
 
-        language = record.rec_headers.get_header('WARC-Identified-Content-Language')
-        if language != 'eng':
+        if record.rec_type != 'response':
+            # skip over WARC request or metadata records
             return
+        if not self.is_html(record):
+            return
+
+        # language = record.rec_headers.get_header('WARC-Identified-Content-Language')
+        # if language != 'eng':
+        #     return
 
         uri = record.rec_headers.get_header('WARC-Target-URI')
-        content = record.content_stream().read().decode('utf-8')[:NUM_CHARS_TO_ANALYSE]
+        content = record.content_stream().read().strip()
+        print("Content", content[:100])
 
-        doc = nlp.tokenizer(content)
-        doc = sentencizer(doc)
-        sentences = list(doc.sents)
-        title_span = sentences[0]
-
-        terms = set()
-        title = extract_terms(title_span, terms, NUM_TITLE_CHARS)
-
-        if not title:
+        if not content:
             return
 
-        extract_start_index = title_span.end
-        extract = extract_terms(doc[extract_start_index:], terms, NUM_EXTRACT_CHARS)
+        try:
+            all_paragraphs, title = justext(content, get_stoplist('English'))
+        except UnicodeDecodeError:
+            print("Unable to decode unicode")
+            return
+        except ParserError:
+            print("Unable to parse")
+            return
+
+        if title is None:
+            print("Missing title")
+            return
+
+        text = '\n'.join([p.text for p in all_paragraphs
+                          if not p.is_boilerplate])[:NUM_CHARS_TO_ANALYSE]
+        print("Paragraphs", text)
+
+        if len(text) < NUM_EXTRACT_CHARS:
+            return
+
+        language = detect(text)
+        print("Got language", language)
+        if language != 'en':
+            return
+
+        # title_tokens = nlp.tokenizer(paragraphs[0])
+
+        terms = set()
+        # title = extract_terms(title_tokens, terms, NUM_TITLE_CHARS)
+        #
+        # if not title:
+        #     return
+
+        extract_tokens = nlp.tokenizer(text)
+        extract = extract_terms(extract_tokens, terms, NUM_EXTRACT_CHARS)
 
         if not extract:
             return
