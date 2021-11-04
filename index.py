@@ -9,6 +9,8 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
     ParagraphMaker, classify_paragraphs, revise_paragraph_classification
 from langdetect import detect
 from lxml.etree import ParserError
+from pyspark.sql import Window
+from pyspark.sql.functions import rand, row_number, col
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 from spacy.pipeline import Sentencizer
 from spacy.tokens import Doc, Token, Span
@@ -20,6 +22,7 @@ NUM_CHARS_TO_ANALYSE = 1000
 NUM_TITLE_CHARS = 65
 NUM_EXTRACT_CHARS = 155
 NUM_PAGES = 1024
+MAX_RESULTS_PER_HASH = 200
 
 
 nlp = spacy.load("en_core_web_sm", disable=['lemmatizer', 'ner'])
@@ -79,7 +82,6 @@ def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
     return paragraphs, title
 
 
-
 class Indexer(CCSparkJob):
     output_schema = StructType([
         StructField("term_hash", LongType(), False),
@@ -135,14 +137,7 @@ class Indexer(CCSparkJob):
         if language != 'en':
             return
 
-        # title_tokens = nlp.tokenizer(paragraphs[0])
-
         terms = set()
-        # title = extract_terms(title_tokens, terms, NUM_TITLE_CHARS)
-        #
-        # if not title:
-        #     return
-
         extract_tokens = nlp.tokenizer(text)
         extract = extract_terms(extract_tokens, terms, NUM_EXTRACT_CHARS)
 
@@ -158,18 +153,26 @@ class Indexer(CCSparkJob):
         input_data = sc.textFile(self.args.input,
                                  minPartitions=self.args.num_input_partitions)
 
-        # output = input_data.mapPartitionsWithIndex(self.process_warcs) \
-        #     .reduceByKey(self.reduce_by_key_func)
+        # TODO: remove this!
+        # input_data = input_data.sample(False, 0.1)
 
-        output = input_data.mapPartitionsWithIndex(self.process_warcs)
+        rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
+        df = sqlc.createDataFrame(rdd, schema=self.output_schema)
 
-        sqlc.createDataFrame(output, schema=self.output_schema) \
-            .coalesce(self.args.num_output_partitions) \
-            .write \
-            .format(self.args.output_format) \
-            .option("compression", self.args.output_compression) \
-            .options(**self.get_output_options()) \
-            .saveAsTable(self.args.output)
+        window = Window.partitionBy(df['term_hash']).orderBy(rand())
+
+        output = df.select('*', row_number().over(window).alias('rank')) \
+            .filter(col('rank') <= MAX_RESULTS_PER_HASH) \
+
+        output.write.format('json').option('compression', 'gzip').save('results')
+
+        # sqlc.createDataFrame(output, schema=self.output_schema) \
+        #     .coalesce(self.args.num_output_partitions) \
+        #     .write \
+        #     .format(self.args.output_format) \
+        #     .option("compression", self.args.output_compression) \
+        #     .options(**self.get_output_options()) \
+        #     .saveAsTable(self.args.output)
 
         self.log_aggregators(sc)
 
