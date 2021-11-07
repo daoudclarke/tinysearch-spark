@@ -14,7 +14,6 @@ from langdetect import detect
 from lxml.etree import ParserError
 from pyspark.sql import Window, DataFrame
 from pyspark.sql.functions import rand, row_number, col
-from pyspark.sql.pandas.functions import pandas_udf, PandasUDFType
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 from spacy.tokens import Token, Span
 from zstandard import ZstdCompressor
@@ -175,7 +174,7 @@ class Indexer(CCSparkJob):
         window = Window.partitionBy(df['term_hash']).orderBy(rand())
         ranked = df.select('*', row_number().over(window).alias('rank')) \
             .filter(col('rank') <= MAX_RESULTS_PER_HASH)
-        output = ranked.groupby('term_hash').apply(compress_group)
+        output = ranked.groupby('term_hash').applyInPandas(compress_group, schema=index_schema)
         return output
 
 
@@ -184,7 +183,6 @@ def compress(data):
     return compressor.compress(data.encode('utf8'))
 
 
-@pandas_udf(Indexer.output_schema, returnType=index_schema, functionType=PandasUDFType.GROUPED_MAP)
 def compress_group(results: pd.DataFrame) -> pd.DataFrame:
     term_hashes = results['term_hash'].unique()
     assert len(term_hashes) == 1
