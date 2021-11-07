@@ -1,7 +1,10 @@
-import re
+import json
+from base64 import b64encode
 
 import mmh3
+import pandas as pd
 import spacy as spacy
+import zstandard
 from justext import get_stoplist
 from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_DEFAULT, \
     STOPWORDS_HIGH_DEFAULT, MAX_LINK_DENSITY_DEFAULT, NO_HEADINGS_DEFAULT, \
@@ -9,14 +12,14 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
     ParagraphMaker, classify_paragraphs, revise_paragraph_classification
 from langdetect import detect
 from lxml.etree import ParserError
-from pyspark.sql import Window
+from pyspark.sql import Window, DataFrame
 from pyspark.sql.functions import rand, row_number, col
+from pyspark.sql.pandas.functions import pandas_udf, PandasUDFType
 from pyspark.sql.types import StructType, StructField, StringType, LongType
-from spacy.pipeline import Sentencizer
-from spacy.tokens import Doc, Token, Span
+from spacy.tokens import Token, Span
+from zstandard import ZstdCompressor
 
 from sparkcc import CCSparkJob
-
 
 NUM_CHARS_TO_ANALYSE = 1000
 NUM_TITLE_CHARS = 65
@@ -26,14 +29,13 @@ MAX_RESULTS_PER_HASH = 200
 
 
 nlp = spacy.load("en_core_web_sm", disable=['lemmatizer', 'ner'])
-sentencizer = Sentencizer(Sentencizer.default_punct_chars + ['\n'])
 
 
-# def tokenizer(sentence):
-#     parsed = nlp.tokenizer(sentence)
-#     return [str(token).lower() for token in parsed
-#             if not token.is_punct
-#             and not token.is_space]
+index_schema = StructType([
+    StructField("term_hash", LongType(), False),
+    StructField("data", StringType(), False),
+])
+
 
 
 def is_valid_token(token: Token):
@@ -153,18 +155,9 @@ class Indexer(CCSparkJob):
         input_data = sc.textFile(self.args.input,
                                  minPartitions=self.args.num_input_partitions)
 
-        # TODO: remove this!
-        # input_data = input_data.sample(False, 0.1)
+        output = self.process_data(input_data, sqlc)
 
-        rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
-        df = sqlc.createDataFrame(rdd, schema=self.output_schema)
-
-        window = Window.partitionBy(df['term_hash']).orderBy(rand())
-
-        output = df.select('*', row_number().over(window).alias('rank')) \
-            .filter(col('rank') <= MAX_RESULTS_PER_HASH) \
-
-        output.write.format('json').option('compression', 'gzip').save('results')
+        output.write.format('json').save('results')
 
         # sqlc.createDataFrame(output, schema=self.output_schema) \
         #     .coalesce(self.args.num_output_partitions) \
@@ -175,6 +168,34 @@ class Indexer(CCSparkJob):
         #     .saveAsTable(self.args.output)
 
         self.log_aggregators(sc)
+
+    def process_data(self, input_data, sqlc) -> DataFrame:
+        rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
+        df = sqlc.createDataFrame(rdd, schema=self.output_schema)
+        window = Window.partitionBy(df['term_hash']).orderBy(rand())
+        ranked = df.select('*', row_number().over(window).alias('rank')) \
+            .filter(col('rank') <= MAX_RESULTS_PER_HASH)
+        output = ranked.groupby('term_hash').apply(compress_group)
+        return output
+
+
+def compress(data):
+    compressor = ZstdCompressor()
+    return compressor.compress(data.encode('utf8'))
+
+
+@pandas_udf(Indexer.output_schema, returnType=index_schema, functionType=PandasUDFType.GROUPED_MAP)
+def compress_group(results: pd.DataFrame) -> pd.DataFrame:
+    term_hashes = results['term_hash'].unique()
+    assert len(term_hashes) == 1
+    term_hash = term_hashes[0]
+
+    items = results[['term', 'uri', 'title', 'extract']].to_dict('records')
+    serialised_data = json.dumps(items)
+    compressed_data = zstandard.compress(serialised_data.encode('utf8'))
+    encoded = b64encode(compressed_data)
+
+    return pd.DataFrame([{'term_hash': term_hash, 'data': encoded}])
 
 
 if __name__ == '__main__':
