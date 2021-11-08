@@ -25,6 +25,7 @@ NUM_TITLE_CHARS = 65
 NUM_EXTRACT_CHARS = 155
 NUM_PAGES = 1024
 MAX_RESULTS_PER_HASH = 200
+PAGE_SIZE = 4096
 
 
 nlp = spacy.load("en_core_web_sm", disable=['lemmatizer', 'ner'])
@@ -178,22 +179,35 @@ class Indexer(CCSparkJob):
         return output
 
 
-def compress(data):
-    compressor = ZstdCompressor()
-    return compressor.compress(data.encode('utf8'))
-
-
 def compress_group(results: pd.DataFrame) -> pd.DataFrame:
     term_hashes = results['term_hash'].unique()
     assert len(term_hashes) == 1
     term_hash = term_hashes[0]
 
+    lower = 0
+    upper = len(results)
+    num_to_select = len(results) // 2
+    while upper - lower > 1:
+        encoded = compress(results.iloc[:num_to_select])
+        size = len(encoded)
+        if size > PAGE_SIZE:
+            upper = num_to_select
+            num_to_select = (num_to_select + lower) // 2
+        else:
+            lower = num_to_select
+            num_to_select = (num_to_select + upper) // 2
+        print(f"Lower {lower}, upper {upper}")
+    encoded = compress(results.iloc[:lower])
+
+    return pd.DataFrame([{'term_hash': term_hash, 'data': encoded}])
+
+
+def compress(results):
     items = results[['term', 'uri', 'title', 'extract']].to_dict('records')
     serialised_data = json.dumps(items)
     compressed_data = zstandard.compress(serialised_data.encode('utf8'))
     encoded = b64encode(compressed_data)
-
-    return pd.DataFrame([{'term_hash': term_hash, 'data': encoded}])
+    return encoded
 
 
 if __name__ == '__main__':
