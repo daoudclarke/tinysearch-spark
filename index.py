@@ -95,6 +95,23 @@ def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
     return paragraphs, title
 
 
+@udf(returnType=FloatType())
+def get_relevance(term, title, extract):
+    title_location = title.lower().find(term)
+    if title_location >= 0:
+        before_count = title_location
+        after_count = len(title) - len(term)
+        score = 1.0
+    else:
+        extract_location = extract.lower().find(term)
+        assert extract_location >= 0
+        before_count = extract_location
+        after_count = 0
+        score = 0.3
+    score *= 0.98 ** before_count * 0.99 ** after_count
+    return score
+
+
 class Indexer(CCSparkJob):
     output_schema = StructType([
         StructField("term_hash", LongType(), False),
@@ -186,7 +203,9 @@ class Indexer(CCSparkJob):
         # domain_mapping = create_map([lit(x) for x in chain(*DOMAIN_RATINGS.items())])
         # df = df.withColumn('domain_rating', domain_mapping.getItem(col("key")))
         df = df.withColumn('domain_rating', get_domain_rating('uri'))
-        window = Window.partitionBy(df['term_hash']).orderBy(col('domain_rating').desc())
+        df = df.withColumn('relevance', get_relevance('term', 'title', 'extract'))
+        df = df.withColumn('score', col('domain_rating') * col('relevance'))
+        window = Window.partitionBy(df['term_hash']).orderBy(col('score').desc())
         ranked = df.select('*', row_number().over(window).alias('rank')) \
             .filter(col('rank') <= MAX_RESULTS_PER_HASH)
         output = ranked.groupby('term_hash').applyInPandas(compress_group, schema=index_schema)
@@ -217,7 +236,7 @@ def compress_group(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def compress(results):
-    items = results[['term', 'uri', 'domain_rating', 'title', 'extract']].to_dict('records')
+    items = results[['term', 'uri', 'domain_rating', 'relevance', 'score', 'title', 'extract']].to_dict('records')
     serialised_data = json.dumps(items)
     return serialised_data
     # compressed_data = zstandard.compress(serialised_data.encode('utf8'))
