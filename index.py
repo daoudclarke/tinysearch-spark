@@ -1,5 +1,7 @@
 import json
 from base64 import b64encode
+from itertools import chain
+from urllib.parse import urlparse
 
 import mmh3
 import pandas as pd
@@ -13,11 +15,12 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
 from langdetect import detect
 from lxml.etree import ParserError
 from pyspark.sql import Window, DataFrame
-from pyspark.sql.functions import rand, row_number, col
-from pyspark.sql.types import StructType, StructField, StringType, LongType
+from pyspark.sql.functions import rand, row_number, col, create_map, lit, udf
+from pyspark.sql.types import StructType, StructField, StringType, LongType, FloatType
 from spacy.tokens import Token, Span
 from zstandard import ZstdCompressor
 
+from domains import TOP_DOMAINS_PATH
 from sparkcc import CCSparkJob
 
 NUM_CHARS_TO_ANALYSE = 1000
@@ -36,6 +39,14 @@ index_schema = StructType([
     StructField("data", StringType(), False),
 ])
 
+
+DOMAIN_RATINGS = json.load(open(TOP_DOMAINS_PATH))
+
+
+@udf(returnType=FloatType())
+def get_domain_rating(url):
+    domain = urlparse(url).netloc
+    return DOMAIN_RATINGS.get(domain, 0.0)
 
 
 def is_valid_token(token: Token):
@@ -172,7 +183,10 @@ class Indexer(CCSparkJob):
     def process_data(self, input_data, sqlc) -> DataFrame:
         rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
         df = sqlc.createDataFrame(rdd, schema=self.output_schema)
-        window = Window.partitionBy(df['term_hash']).orderBy(rand())
+        # domain_mapping = create_map([lit(x) for x in chain(*DOMAIN_RATINGS.items())])
+        # df = df.withColumn('domain_rating', domain_mapping.getItem(col("key")))
+        df = df.withColumn('domain_rating', get_domain_rating('uri'))
+        window = Window.partitionBy(df['term_hash']).orderBy(col('domain_rating').desc())
         ranked = df.select('*', row_number().over(window).alias('rank')) \
             .filter(col('rank') <= MAX_RESULTS_PER_HASH)
         output = ranked.groupby('term_hash').applyInPandas(compress_group, schema=index_schema)
@@ -203,11 +217,12 @@ def compress_group(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def compress(results):
-    items = results[['term', 'uri', 'title', 'extract']].to_dict('records')
+    items = results[['term', 'uri', 'domain_rating', 'title', 'extract']].to_dict('records')
     serialised_data = json.dumps(items)
-    compressed_data = zstandard.compress(serialised_data.encode('utf8'))
-    encoded = b64encode(compressed_data)
-    return encoded
+    return serialised_data
+    # compressed_data = zstandard.compress(serialised_data.encode('utf8'))
+    # encoded = b64encode(compressed_data)
+    # return encoded
 
 
 if __name__ == '__main__':
