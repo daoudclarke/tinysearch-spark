@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(os.environ['HOME']) / 'data' / 'tinysearch'
@@ -19,10 +20,13 @@ def get_top_domains():
     data = pd.read_csv(ALL_DOMAINS_PATH, index_col='domain')
 
     frequent = data[data['total'] >= MIN_COUNT]
-    scores = frequent['mean_score'].to_dict()
+    scores = frequent['mean_score'] * np.log(frequent['total']) ** 2
+    median_score = np.median(scores)
+    probabilities = scores / (scores + median_score)
 
+    probabilities.sort_values(ascending=False, inplace=True)
     with open(TOP_DOMAINS_PATH, 'w') as output_file:
-        json.dump(scores, output_file)
+        json.dump(probabilities.to_dict(), output_file, indent=2)
 
 
 if __name__ == '__main__':
