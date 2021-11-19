@@ -37,6 +37,7 @@ nlp = spacy.load("en_core_web_sm", disable=['lemmatizer', 'ner'])
 index_schema = StructType([
     StructField("term_hash", LongType(), False),
     StructField("data", StringType(), False),
+    StructField("top", StringType(), False),
 ])
 
 
@@ -232,16 +233,18 @@ def compress_group(results: pd.DataFrame) -> pd.DataFrame:
         print(f"Lower {lower}, upper {upper}")
     encoded = compress(results.iloc[:lower])
 
-    return pd.DataFrame([{'term_hash': term_hash, 'data': encoded}])
+    top_result = json.dumps(results.iloc[0].to_dict())
+    return pd.DataFrame([{'term_hash': term_hash, 'data': encoded, 'top': top_result}])
 
 
 def compress(results):
-    items = results[['term', 'uri', 'domain_rating', 'relevance', 'score', 'title', 'extract']].to_dict('records')
+    selected_columns = results[['term', 'uri', 'title', 'extract']]
+    item_dicts = selected_columns.to_dict('records')
+    items = [list(item.values()) for item in item_dicts]
     serialised_data = json.dumps(items)
-    return serialised_data
-    # compressed_data = zstandard.compress(serialised_data.encode('utf8'))
-    # encoded = b64encode(compressed_data)
-    # return encoded
+    compressed_data = zstandard.compress(serialised_data.encode('utf8'))
+    encoded = b64encode(compressed_data)
+    return encoded
 
 
 if __name__ == '__main__':
