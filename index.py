@@ -1,6 +1,9 @@
+import argparse
 import json
 from base64 import b64encode
+from collections import Iterator
 from itertools import chain
+from typing import Iterable
 from urllib.parse import urlparse
 
 import mmh3
@@ -14,8 +17,10 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
     ParagraphMaker, classify_paragraphs, revise_paragraph_classification
 from langdetect import detect
 from lxml.etree import ParserError
+from pyspark import SparkConf, SparkContext, SQLContext
 from pyspark.sql import Window, DataFrame
 from pyspark.sql.functions import rand, row_number, col, create_map, lit, udf
+from pyspark.sql.pandas.functions import pandas_udf, PandasUDFType
 from pyspark.sql.types import StructType, StructField, StringType, LongType, FloatType
 from spacy.tokens import Token, Span
 from zstandard import ZstdCompressor
@@ -66,36 +71,6 @@ def extract_terms(span: Span, terms: set[str], max_chars: int) -> str:
     return extract
 
 
-def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
-            length_high=LENGTH_HIGH_DEFAULT, stopwords_low=STOPWORDS_LOW_DEFAULT,
-            stopwords_high=STOPWORDS_HIGH_DEFAULT, max_link_density=MAX_LINK_DENSITY_DEFAULT,
-            max_heading_distance=MAX_HEADING_DISTANCE_DEFAULT, no_headings=NO_HEADINGS_DEFAULT,
-            encoding=None, default_encoding=DEFAULT_ENCODING,
-            enc_errors=DEFAULT_ENC_ERRORS, preprocessor=preprocessor):
-    """
-    Converts an HTML page into a list of classified paragraphs. Each paragraph
-    is represented as instance of class ˙˙justext.paragraph.Paragraph˙˙.
-    """
-    dom = html_to_dom(html_text, default_encoding, encoding, enc_errors)
-    print("Parsed HTML")
-
-    try:
-        title = dom.find(".//title").text
-    except AttributeError:
-        title = None
-
-    preprocessed_dom = preprocessor(dom)
-
-    paragraphs = ParagraphMaker.make_paragraphs(preprocessed_dom)
-    print("Got paragraphs")
-
-    classify_paragraphs(paragraphs, stoplist, length_low, length_high,
-                        stopwords_low, stopwords_high, max_link_density, no_headings)
-    revise_paragraph_classification(paragraphs, max_heading_distance)
-
-    return paragraphs, title
-
-
 @udf(returnType=FloatType())
 def get_relevance(term, title, extract):
     title_location = title.lower().find(term)
@@ -113,104 +88,52 @@ def get_relevance(term, title, extract):
     return score
 
 
-class Indexer(CCSparkJob):
-    output_schema = StructType([
-        StructField("term_hash", LongType(), False),
-        StructField("term", StringType(), False),
-        StructField("uri", StringType(), False),
-        StructField("title", StringType(), False),
-        StructField("extract", StringType(), False),
-    ])
+record_schema = StructType([
+    StructField("term_hash", LongType(), False),
+    StructField("term", StringType(), False),
+    StructField("uri", StringType(), False),
+    StructField("title", StringType(), False),
+    StructField("extract", StringType(), False),
+])
 
-    def process_record(self, record):
-        # print("Record", record.format, record.rec_type, record.rec_headers, record.raw_stream,
-        #       record.http_headers, record.content_type, record.length)
 
-        if record.rec_type != 'response':
-            # skip over WARC request or metadata records
-            return
-        if not self.is_html(record):
-            return
+def get_terms(record_batches: Iterable[pd.DataFrame]) -> Iterable[pd.DataFrame]:
+    for records in record_batches:
+        term_rows = []
+        for row in records.itertuples():
+            terms = set()
+            extract_tokens = nlp.tokenizer(row.extract)
+            extract = extract_terms(extract_tokens, terms, NUM_EXTRACT_CHARS)
 
-        # language = record.rec_headers.get_header('WARC-Identified-Content-Language')
-        # if language != 'eng':
-        #     return
+            title_terms = nlp.tokenizer(row.title)
+            title_tidied = extract_terms(title_terms, terms, NUM_TITLE_CHARS)
 
-        uri = record.rec_headers.get_header('WARC-Target-URI')
-        content = record.content_stream().read().strip()
-        print("Content", uri, content[:100])
+            if not extract:
+                return
 
-        if not content:
-            return
+            for term in terms:
+                key_hash = mmh3.hash(term, signed=False)
+                key = key_hash % NUM_PAGES
+                term_rows.append({
+                    'term_hash': key,
+                    'term': term,
+                    'uri': row.uri,
+                    'title': title_tidied,
+                    'extract': extract,
+                })
+        yield pd.DataFrame(term_rows)
 
-        try:
-            all_paragraphs, title = justext(content, get_stoplist('English'))
-        except UnicodeDecodeError:
-            print("Unable to decode unicode")
-            return
-        except ParserError:
-            print("Unable to parse")
-            return
 
-        if title is None:
-            print("Missing title")
-            return
-
-        text = '\n'.join([p.text for p in all_paragraphs
-                          if not p.is_boilerplate])[:NUM_CHARS_TO_ANALYSE]
-        print("Paragraphs", text)
-
-        if len(text) < NUM_EXTRACT_CHARS:
-            return
-
-        language = detect(text)
-        print("Got language", language)
-        if language != 'en':
-            return
-
-        terms = set()
-        extract_tokens = nlp.tokenizer(text)
-        extract = extract_terms(extract_tokens, terms, NUM_EXTRACT_CHARS)
-
-        if not extract:
-            return
-
-        for term in terms:
-            key_hash = mmh3.hash(term, signed=False)
-            key = key_hash % NUM_PAGES
-            yield key, term, uri, title, extract
-
-    def run_job(self, sc, sqlc):
-        input_data = sc.textFile(self.args.input,
-                                 minPartitions=self.args.num_input_partitions)
-
-        output = self.process_data(input_data, sqlc)
-
-        output.write.format('json').save('results')
-
-        # sqlc.createDataFrame(output, schema=self.output_schema) \
-        #     .coalesce(self.args.num_output_partitions) \
-        #     .write \
-        #     .format(self.args.output_format) \
-        #     .option("compression", self.args.output_compression) \
-        #     .options(**self.get_output_options()) \
-        #     .saveAsTable(self.args.output)
-
-        self.log_aggregators(sc)
-
-    def process_data(self, input_data, sqlc) -> DataFrame:
-        rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
-        df = sqlc.createDataFrame(rdd, schema=self.output_schema)
-        # domain_mapping = create_map([lit(x) for x in chain(*DOMAIN_RATINGS.items())])
-        # df = df.withColumn('domain_rating', domain_mapping.getItem(col("key")))
-        df = df.withColumn('domain_rating', get_domain_rating('uri'))
-        df = df.withColumn('relevance', get_relevance('term', 'title', 'extract'))
-        df = df.withColumn('score', col('domain_rating') * col('relevance'))
-        window = Window.partitionBy(df['term_hash']).orderBy(col('score').desc())
-        ranked = df.select('*', row_number().over(window).alias('rank')) \
-            .filter(col('rank') <= MAX_RESULTS_PER_HASH)
-        output = ranked.groupby('term_hash').applyInPandas(compress_group, schema=index_schema)
-        return output
+def create_index(input_df: DataFrame) -> DataFrame:
+    df = input_df.mapInPandas(get_terms, record_schema)
+    df = df.withColumn('domain_rating', get_domain_rating('uri'))
+    df = df.withColumn('relevance', get_relevance('term', 'title', 'extract'))
+    df = df.withColumn('score', col('domain_rating') * col('relevance'))
+    window = Window.partitionBy(df['term_hash']).orderBy(col('score').desc())
+    ranked = df.select('*', row_number().over(window).alias('rank')) \
+        .filter(col('rank') <= MAX_RESULTS_PER_HASH)
+    output = ranked.groupby('term_hash').applyInPandas(compress_group, schema=index_schema)
+    return output
 
 
 def compress_group(results: pd.DataFrame) -> pd.DataFrame:
@@ -247,6 +170,29 @@ def compress(results):
     return encoded
 
 
+def run(input_path, output_path):
+    conf = SparkConf()
+
+    sc = SparkContext(
+        appName=__name__,
+        conf=conf)
+    sqlc = SQLContext(sparkContext=sc)
+    extracts_df = sqlc.read.format('json').option('compress', 'gzip').load(input_path)
+    print("Got extracts", extracts_df.take(10))
+    index = create_index(extracts_df)
+    index.write.format('json').save(output_path)
+
+
+def parse_arguments():
+    arg_parser = argparse.ArgumentParser()
+
+    arg_parser.add_argument("input", help="Path to file listing input paths")
+    arg_parser.add_argument("output",
+                            help="Name of output table (saved in spark.sql.warehouse.dir)")
+
+    return arg_parser.parse_args()
+
+
 if __name__ == '__main__':
-    job = Indexer()
-    job.run()
+    args = parse_arguments()
+    run(args.input, args.output)

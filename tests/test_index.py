@@ -18,7 +18,7 @@ def test_indexer(spark_context: SparkContext):
     sql_context = SparkSession.builder.getOrCreate()
     data = spark_context.parallelize([f'file:{DATA_PATH}'])
 
-    processed = indexer.process_data(data, sql_context).collect()
+    processed = indexer.create_index(data, sql_context).collect()
 
     assert len(processed) > 0
 

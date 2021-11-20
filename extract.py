@@ -115,7 +115,7 @@ class Extractor(CCSparkJob):
             return
 
         try:
-            all_paragraphs, title = justext(content, get_stoplist('English'))
+            all_paragraphs, full_title = justext(content, get_stoplist('English'))
         except UnicodeDecodeError:
             print("Unable to decode unicode")
             return
@@ -123,9 +123,12 @@ class Extractor(CCSparkJob):
             print("Unable to parse")
             return
 
-        if title is None:
+        if full_title is None:
             print("Missing title")
             return
+
+        title = full_title[:NUM_TITLE_CHARS] + '…' \
+            if len(full_title) > NUM_TITLE_CHARS else full_title
 
         text = '\n'.join([p.text for p in all_paragraphs
                           if not p.is_boilerplate])[:NUM_CHARS_TO_ANALYSE]
