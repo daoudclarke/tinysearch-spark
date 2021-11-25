@@ -2,9 +2,10 @@ aws s3 cp sparkcc.py s3://tinysearch/code/
 aws s3 cp extract.py s3://tinysearch/code/
 aws s3 cp bootstrap.sh s3://tinysearch/code/
 
+
 aws emr create-cluster \
     --applications Name=Spark Name=Zeppelin \
-    --ec2-attributes '{"InstanceProfile":"EMR_EC2_DefaultRole","SubnetId":"subnet-9a95acdc","EmrManagedSlaveSecurityGroup":"sg-050f146bb97eaa250","EmrManagedMasterSecurityGroup":"sg-054778695d46ae657"}' \
+    --ec2-attributes '{"InstanceProfile":"EMR_EC2_DefaultRole","SubnetId":"subnet-03c33360c68f73a48"}' \
     --service-role EMR_DefaultRole \
     --enable-debugging \
     --release-label emr-5.33.1 \
