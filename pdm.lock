@@ -42,6 +42,14 @@ requires_python = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
 summary = "JSON Matching Expressions"
 
 [[package]]
+name = "justext"
+version = "3.0.0"
+summary = "Heuristic based boilerplate removal tool"
+dependencies = [
+    "lxml>=4.4.2",
+]
+
+[[package]]
 name = "lxml"
 version = "4.6.4"
 requires_python = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, != 3.4.*"
@@ -99,7 +107,7 @@ dependencies = [
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:c917ec0e87c60dc1c57195396c47f0fbb8c7d82c8b1023a55ce6ea25ec8babd5"
+content_hash = "sha256:8d7417d788896eb8368d4a7b8a5e5d37078acd0792c9ba706196a1c36ef6063e"
 
 [metadata.files]
 "beautifulsoup4 4.10.0" = [
@@ -108,6 +116,7 @@ content_hash = "sha256:c917ec0e87c60dc1c57195396c47f0fbb8c7d82c8b1023a55ce6ea25e
 ]
 "boto3 1.20.12" = [
     {file = "boto3-1.20.12-py3-none-any.whl", hash = "sha256:df9c74f3dd35e1147e0e873984384e00b0db8c3f6552d8e0b7f50e7b8177f537"},
+    {file = "boto3-1.20.12.tar.gz", hash = "sha256:224a380a3a825beaf7aa54119e7469884c6adb9098cbf3d64bd487ac6c564d57"},
 ]
 "botocore 1.23.12" = [
     {file = "botocore-1.23.12-py3-none-any.whl", hash = "sha256:002f96a07503c83c1d110174506e68a8fbcb4765b7eafa5f66ef59d910912d17"},
@@ -120,6 +129,10 @@ content_hash = "sha256:c917ec0e87c60dc1c57195396c47f0fbb8c7d82c8b1023a55ce6ea25e
 "jmespath 0.10.0" = [
     {file = "jmespath-0.10.0-py2.py3-none-any.whl", hash = "sha256:cdf6525904cc597730141d61b36f2e4b8ecc257c420fa2f4549bac2c2d0cb72f"},
     {file = "jmespath-0.10.0.tar.gz", hash = "sha256:b85d0567b8666149a93172712e68920734333c0ce7e89b78b3e987f71e5ed4f9"},
+]
+"justext 3.0.0" = [
+    {file = "jusText-3.0.0-py2.py3-none-any.whl", hash = "sha256:86b48f5b1d99505acd072f5831def6cd3f1306043651c524a1c609e62e3544e4"},
+    {file = "jusText-3.0.0.tar.gz", hash = "sha256:7640e248218795f6be65f6c35fe697325a3280fcb4675d1525bcdff2b86faadf"},
 ]
 "lxml 4.6.4" = [
     {file = "lxml-4.6.4-cp27-cp27m-macosx_10_14_x86_64.whl", hash = "sha256:bbf2dc330bd44bfc0254ab37677ec60f7c7ecea55ad8ba1b8b2ea7bf20c265f5"},

@@ -5,7 +5,16 @@ description = ""
 authors = [
     {name = "Daoud Clarke", email = "daoud.clarke@gmail.com"},
 ]
-dependencies = ["botocore", "boto3", "ujson", "warcio", "idna", "beautifulsoup4", "lxml"]
+dependencies = [
+    "botocore",
+    "boto3",
+    "ujson",
+    "warcio",
+    "idna",
+    "beautifulsoup4",
+    "lxml",
+    "justext~=3.0",
+]
 requires-python = ">=3.9"
 dynamic = ["classifiers"]
 license = {text = "Copyright DataPastry 2021"}

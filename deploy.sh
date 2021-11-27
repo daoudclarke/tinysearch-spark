@@ -1,6 +1,7 @@
 aws s3 cp sparkcc.py s3://tinysearch/code/
 aws s3 cp extract.py s3://tinysearch/code/
 aws s3 cp bootstrap.sh s3://tinysearch/code/
+aws s3 cp sparkcc.py s3://tinysearch/code/
 
 
 aws emr create-cluster \

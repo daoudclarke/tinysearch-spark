@@ -3,12 +3,11 @@ Extract content from HTML files and store it as compressed JSON
 """
 
 import json
-from base64 import b64encode
+import os
+from pathlib import Path
 from urllib.parse import urlparse
 
-import pandas as pd
 import spacy as spacy
-import zstandard
 from justext import get_stoplist
 from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_DEFAULT, \
     STOPWORDS_HIGH_DEFAULT, MAX_LINK_DENSITY_DEFAULT, NO_HEADINGS_DEFAULT, \
@@ -17,12 +16,12 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
 from langdetect import detect
 from lxml.etree import ParserError
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import udf
-from pyspark.sql.types import StructType, StructField, StringType, LongType, FloatType
-from spacy.tokens import Token, Span
+from pyspark.sql.types import StructType, StructField, StringType, LongType
 
-from domains import TOP_DOMAINS_PATH
 from sparkcc import CCSparkJob
+
+DATA_DIR = Path(os.environ['HOME']) / 'data' / 'tinysearch'
+TOP_DOMAINS_PATH = DATA_DIR / 'hn-top-domains-filtered.json'
 
 MAX_URI_LENGTH = 150
 NUM_CHARS_TO_ANALYSE = 1000
