@@ -11,7 +11,7 @@ import pandas as pd
 
 DATA_DIR = Path(os.environ['HOME']) / 'data' / 'tinysearch'
 ALL_DOMAINS_PATH = DATA_DIR / 'hn-top-domains.csv'
-TOP_DOMAINS_PATH = DATA_DIR / 'hn-top-domains-filtered.json'
+TOP_DOMAINS_PATH = DATA_DIR / 'hn-top-domains-filtered.py'
 
 MIN_COUNT = 10
 
@@ -26,7 +26,11 @@ def get_top_domains():
 
     probabilities.sort_values(ascending=False, inplace=True)
     with open(TOP_DOMAINS_PATH, 'w') as output_file:
-        json.dump(probabilities.to_dict(), output_file, indent=2)
+        output_file.write("DOMAINS = " + str(probabilities.to_dict()) + '\n\n')
+        # json.dump(probabilities.to_dict(), output_file, indent=2)
+
+        # for row in probabilities.iterrows():
+        #     output_file.write(json.dumps(row.to_dict()) + '\n')
 
 
 if __name__ == '__main__':

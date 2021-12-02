@@ -4,6 +4,7 @@ Extract content from HTML files and store it as compressed JSON
 
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,12 +17,20 @@ from justext.core import LENGTH_LOW_DEFAULT, LENGTH_HIGH_DEFAULT, STOPWORDS_LOW_
 from langdetect import detect
 from lxml.etree import ParserError
 from pyspark.sql import DataFrame
+from pyspark.sql import SparkSession, SQLContext
 from pyspark.sql.types import StructType, StructField, StringType, LongType
+from pyspark.sql.functions import expr, col
+from pyspark import SparkFiles
 
-from sparkcc import CCSparkJob
 
-DATA_DIR = Path(os.environ['HOME']) / 'data' / 'tinysearch'
-TOP_DOMAINS_PATH = DATA_DIR / 'hn-top-domains-filtered.json'
+
+import boto3
+from warcio import ArchiveIterator
+
+
+OUTPUT_PATH = 's3://tinysearch/outputs/index'
+
+TOP_DOMAINS_PATH = 'hn-top-domains-filtered.json'
 
 MAX_URI_LENGTH = 150
 NUM_CHARS_TO_ANALYSE = 1000
@@ -41,13 +50,74 @@ index_schema = StructType([
     StructField("top", StringType(), False),
 ])
 
+spark = SparkSession \
+    .builder \
+    .appName("Python Spark SQL basic example") \
+    .config("spark.some.config.option", "some-value") \
+    .getOrCreate()
 
-DOMAIN_RATINGS = json.load(open(TOP_DOMAINS_PATH))
+
+DOMAIN_RATINGS = json.load(open(SparkFiles.get(TOP_DOMAINS_PATH)))
+
+
+def run():
+    sqlc = SQLContext(sparkContext=spark)
+
+    df = spark.read.load('s3://commoncrawl/cc-index/table/cc-main/warc/')
+    df.createOrReplaceTempView('ccindex')
+    sqldf = spark.sql('''SELECT url, parse_url(url, 'HOST') as domain, warc_filename, warc_record_offset,
+                            warc_record_length
+                            FROM "ccindex"
+                            WHERE crawl = "CC-MAIN-2018-43"
+                            AND subset = "warc"
+                            AND content_languages = "en"''')
+    sqldf = sqldf.filter(col('domain').isin(list(DOMAIN_RATINGS.keys())))
+    sqldf = sqldf.sample(fraction=0.0001)
+    warc_recs = sqldf.select("url", "warc_filename", "warc_record_offset", "warc_record_length").rdd
+    rdd = warc_recs.mapPartitions(fetch_process_warc_records)
+    output = sqlc.createDataFrame(rdd, schema=output_schema)
+    output.write.option('compression', 'gzip').format('json').save(OUTPUT_PATH)
+
+
+def fetch_process_warc_records(self, rows):
+    """Fetch all WARC records defined by filenames and offsets in rows,
+    parse the records and the contained HTML, split the text into words
+    and emit pairs <word, 1>"""
+    s3client = boto3.client('s3')
+    for row in rows:
+        url = row['url']
+        warc_path = row['warc_filename']
+        offset = int(row['warc_record_offset'])
+        length = int(row['warc_record_length'])
+        rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
+        response = s3client.get_object(Bucket='commoncrawl',
+        Key=warc_path,
+        Range=rangereq)
+        record_stream = BytesIO(response["Body"].read())
+        for record in ArchiveIterator(record_stream):
+            result = process_record(record)
+            if result:
+                yield result
 
 
 def get_domain_rating(url):
     domain = urlparse(url).netloc
     return DOMAIN_RATINGS.get(domain)
+
+
+def is_html(record):
+    """Return true if (detected) MIME type of a record is HTML"""
+    html_types = ['text/html', 'application/xhtml+xml']
+    if (('WARC-Identified-Payload-Type' in record.rec_headers) and
+        (record.rec_headers['WARC-Identified-Payload-Type'] in
+         html_types)):
+        return True
+    content_type = record.http_headers.get_header('content-type', None)
+    if content_type:
+        for html_type in html_types:
+            if html_type in content_type:
+                return True
+    return False
 
 
 def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
@@ -80,84 +150,71 @@ def justext(html_text, stoplist, length_low=LENGTH_LOW_DEFAULT,
     return paragraphs, title
 
 
-class Extractor(CCSparkJob):
-    output_schema = StructType([
-        StructField("uri", StringType(), False),
-        StructField("title", StringType(), False),
-        StructField("extract", StringType(), False),
-    ])
+output_schema = StructType([
+    StructField("uri", StringType(), False),
+    StructField("title", StringType(), False),
+    StructField("extract", StringType(), False),
+])
 
-    def process_record(self, record):
-        # print("Record", record.format, record.rec_type, record.rec_headers, record.raw_stream,
-        #       record.http_headers, record.content_type, record.length)
 
-        if record.rec_type != 'response':
-            # skip over WARC request or metadata records
-            return
-        if not self.is_html(record):
-            return
+def process_record(record):
+    # print("Record", record.format, record.rec_type, record.rec_headers, record.raw_stream,
+    #       record.http_headers, record.content_type, record.length)
 
-        uri = record.rec_headers.get_header('WARC-Target-URI')
-        if len(uri) > MAX_URI_LENGTH:
-            print("URI too long", len(uri))
-            return
+    if record.rec_type != 'response':
+        # skip over WARC request or metadata records
+        return
+    if not is_html(record):
+        return
 
-        rating = get_domain_rating(uri)
-        print("Rating", rating)
-        if rating is None:
-            return
+    uri = record.rec_headers.get_header('WARC-Target-URI')
+    if len(uri) > MAX_URI_LENGTH:
+        print("URI too long", len(uri))
+        return
 
-        content = record.content_stream().read().strip()
-        print("Content", uri, content[:100])
+    rating = get_domain_rating(uri)
+    print("Rating", rating)
+    if rating is None:
+        return
 
-        if not content:
-            return
+    content = record.content_stream().read().strip()
+    print("Content", uri, content[:100])
 
-        try:
-            all_paragraphs, full_title = justext(content, get_stoplist('English'))
-        except UnicodeDecodeError:
-            print("Unable to decode unicode")
-            return
-        except ParserError:
-            print("Unable to parse")
-            return
+    if not content:
+        return
 
-        if full_title is None:
-            print("Missing title")
-            return
+    try:
+        all_paragraphs, full_title = justext(content, get_stoplist('English'))
+    except UnicodeDecodeError:
+        print("Unable to decode unicode")
+        return
+    except ParserError:
+        print("Unable to parse")
+        return
 
-        title = full_title[:NUM_TITLE_CHARS] + '…' \
-            if len(full_title) > NUM_TITLE_CHARS else full_title
+    if full_title is None:
+        print("Missing title")
+        return
 
-        text = '\n'.join([p.text for p in all_paragraphs
-                          if not p.is_boilerplate])[:NUM_CHARS_TO_ANALYSE]
-        print("Paragraphs", text)
+    title = full_title[:NUM_TITLE_CHARS] + '…' \
+        if len(full_title) > NUM_TITLE_CHARS else full_title
 
-        if len(text) < NUM_EXTRACT_CHARS:
-            return
+    text = '\n'.join([p.text for p in all_paragraphs
+                      if not p.is_boilerplate])[:NUM_CHARS_TO_ANALYSE]
+    print("Paragraphs", text)
 
-        language = detect(text)
-        print("Got language", language)
-        if language != 'en':
-            return
+    if len(text) < NUM_EXTRACT_CHARS:
+        return
 
-        extract = text[:NUM_EXTRACT_CHARS]
-        yield uri, title, extract
+    language = detect(text)
+    print("Got language", language)
+    if language != 'en':
+        return
 
-    def run_job(self, sc, sqlc):
-        input_data = sc.textFile(self.args.input,
-                                 minPartitions=self.args.num_input_partitions)
+    extract = text[:NUM_EXTRACT_CHARS]
+    yield uri, title, extract
 
-        output = self.process_data(input_data, sqlc)
-        output.write.option('compression', 'gzip').format('json').save(self.args.output)
-
-        self.log_aggregators(sc)
-
-    def process_data(self, input_data, sqlc) -> DataFrame:
-        rdd = input_data.mapPartitionsWithIndex(self.process_warcs)
-        return sqlc.createDataFrame(rdd, schema=self.output_schema)
 
 
 if __name__ == '__main__':
-    job = Extractor()
-    job.run()
+    run()
