@@ -30,8 +30,6 @@ from warcio import ArchiveIterator
 
 OUTPUT_PATH = 's3://tinysearch/outputs/index'
 
-TOP_DOMAINS_PATH = 'hn-top-domains-filtered.json'
-
 MAX_URI_LENGTH = 150
 NUM_CHARS_TO_ANALYSE = 1000
 NUM_TITLE_CHARS = 65
@@ -57,9 +55,6 @@ spark = SparkSession \
     .getOrCreate()
 
 
-DOMAIN_RATINGS = json.load(open(SparkFiles.get(TOP_DOMAINS_PATH)))
-
-
 def run():
     sqlc = SQLContext(sparkContext=spark)
 
@@ -67,11 +62,12 @@ def run():
     df.createOrReplaceTempView('ccindex')
     sqldf = spark.sql('''SELECT url, parse_url(url, 'HOST') as domain, warc_filename, warc_record_offset,
                             warc_record_length
-                            FROM "ccindex"
-                            WHERE crawl = "CC-MAIN-2018-43"
-                            AND subset = "warc"
-                            AND content_languages = "en"''')
-    sqldf = sqldf.filter(col('domain').isin(list(DOMAIN_RATINGS.keys())))
+                            FROM ccindex
+                            WHERE crawl = 'CC-MAIN-2018-43'
+                            AND subset = 'warc'
+                            AND content_languages = 'en'
+                      ''')
+    sqldf = sqldf.filter(col('domain').isin(list(DOMAINS.keys())))
     sqldf = sqldf.sample(fraction=0.0001)
     warc_recs = sqldf.select("url", "warc_filename", "warc_record_offset", "warc_record_length").rdd
     rdd = warc_recs.mapPartitions(fetch_process_warc_records)
@@ -102,7 +98,7 @@ def fetch_process_warc_records(self, rows):
 
 def get_domain_rating(url):
     domain = urlparse(url).netloc
-    return DOMAIN_RATINGS.get(domain)
+    return DOMAINS.get(domain)
 
 
 def is_html(record):

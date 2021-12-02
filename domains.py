@@ -11,13 +11,14 @@ import pandas as pd
 
 DATA_DIR = Path(os.environ['HOME']) / 'data' / 'tinysearch'
 ALL_DOMAINS_PATH = DATA_DIR / 'hn-top-domains.csv'
-TOP_DOMAINS_PATH = DATA_DIR / 'hn-top-domains-filtered.py'
+TOP_DOMAINS_PATH = 'hn-top-domains-filtered.py'
 
 MIN_COUNT = 10
 
 
 def get_top_domains():
     data = pd.read_csv(ALL_DOMAINS_PATH, index_col='domain')
+    data = data[data.index.notnull()]
 
     frequent = data[data['total'] >= MIN_COUNT]
     scores = frequent['mean_score'] * np.log(frequent['total']) ** 2
@@ -26,7 +27,8 @@ def get_top_domains():
 
     probabilities.sort_values(ascending=False, inplace=True)
     with open(TOP_DOMAINS_PATH, 'w') as output_file:
-        output_file.write("DOMAINS = " + str(probabilities.to_dict()) + '\n\n')
+        probabilities_str = str(probabilities.to_dict()).replace(', ', ',\n')
+        output_file.write("DOMAINS = " + probabilities_str + '\n\n')
         # json.dump(probabilities.to_dict(), output_file, indent=2)
 
         # for row in probabilities.iterrows():
