@@ -60,14 +60,13 @@ def run():
 
     df = spark.read.load('s3://commoncrawl/cc-index/table/cc-main/warc/')
     df.createOrReplaceTempView('ccindex')
-    sqldf = spark.sql('''SELECT url, parse_url(url, 'HOST') as domain, warc_filename, warc_record_offset,
+    sqldf = spark.sql('''SELECT url, warc_filename, warc_record_offset,
                             warc_record_length
                             FROM ccindex
-                            WHERE crawl = 'CC-MAIN-2018-43'
+                            WHERE crawl = 'CC-MAIN-2021-43'
                             AND subset = 'warc'
-                            AND content_languages = 'en'
                       ''')
-    sqldf = sqldf.filter(col('domain').isin(list(DOMAINS.keys())))
+    sqldf = sqldf.filter(col('url_host_name').isin(list(DOMAINS.keys())))
     sqldf = sqldf.sample(fraction=0.0001)
     warc_recs = sqldf.select("url", "warc_filename", "warc_record_offset", "warc_record_length").rdd
     rdd = warc_recs.mapPartitions(fetch_process_warc_records)
