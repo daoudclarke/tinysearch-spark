@@ -74,13 +74,12 @@ def run():
     output.write.option('compression', 'gzip').format('json').save(OUTPUT_PATH)
 
 
-def fetch_process_warc_records(self, rows):
+def fetch_process_warc_records(rows):
     """Fetch all WARC records defined by filenames and offsets in rows,
     parse the records and the contained HTML, split the text into words
     and emit pairs <word, 1>"""
     s3client = boto3.client('s3')
     for row in rows:
-        url = row['url']
         warc_path = row['warc_filename']
         offset = int(row['warc_record_offset'])
         length = int(row['warc_record_length'])
