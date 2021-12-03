@@ -67,11 +67,13 @@ def run():
                             AND subset = 'warc'
                       ''')
     sqldf = sqldf.filter(col('url_host_name').isin(list(DOMAINS.keys())))
+    print("Got rows", sqldf.take(10))
+    print("Num rows", sqldf.count())
     sqldf = sqldf.sample(fraction=0.0001)
     warc_recs = sqldf.select("url", "warc_filename", "warc_record_offset", "warc_record_length").rdd
     rdd = warc_recs.mapPartitions(fetch_process_warc_records)
     output = sqlc.createDataFrame(rdd, schema=output_schema)
-    output.write.option('compression', 'gzip').format('json').save(OUTPUT_PATH)
+    output.write.option('compression', 'gzip').format('json').mode('overwrite').save(OUTPUT_PATH)
 
 
 def fetch_process_warc_records(rows):
