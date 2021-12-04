@@ -91,8 +91,7 @@ def fetch_process_warc_records(rows):
         Range=rangereq)
         record_stream = BytesIO(response["Body"].read())
         for record in ArchiveIterator(record_stream):
-            result = process_record(record)
-            if result:
+            for result in process_record(record):
                 yield result
 
 
@@ -209,7 +208,6 @@ def process_record(record):
 
     extract = text[:NUM_EXTRACT_CHARS]
     yield uri, title, extract
-
 
 
 if __name__ == '__main__':
