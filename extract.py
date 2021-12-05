@@ -69,7 +69,7 @@ def run():
     sqldf = sqldf.filter(col('url_host_name').isin(list(DOMAINS.keys())))
     print("Got rows", sqldf.take(10))
     print("Num rows", sqldf.count())
-    sqldf = sqldf.sample(fraction=0.0001)
+    sqldf = sqldf.sample(fraction=0.001)
     warc_recs = sqldf.select("url", "warc_filename", "warc_record_offset", "warc_record_length").rdd
     rdd = warc_recs.mapPartitions(fetch_process_warc_records)
     output = sqlc.createDataFrame(rdd, schema=output_schema)
@@ -167,13 +167,13 @@ def process_record(record):
         print("URI too long", len(uri))
         return
 
-    rating = get_domain_rating(uri)
-    print("Rating", rating)
-    if rating is None:
-        return
+    # rating = get_domain_rating(uri)
+    # print("Rating", rating)
+    # if rating is None:
+    #     return
 
     content = record.content_stream().read().strip()
-    print("Content", uri, content[:100])
+    # print("Content", uri, content[:100])
 
     if not content:
         return
